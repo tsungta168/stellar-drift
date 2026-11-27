@@ -60,7 +60,12 @@ function hit() {
   burst(ship.x,ship.y,'#ff718b');
 }
 function update(dt) {
+  const armorWasActive = elapsed >= 55;
   elapsed += dt;
+  const armorActive = elapsed >= 55;
+  if (armorActive && !armorWasActive) {
+    for (const drone of drones) drone.hp = 2;
+  }
   shield -= dt;
   if (goal) {
     ship.x += (goal.x-ship.x)*Math.min(1,dt*20);
@@ -80,8 +85,12 @@ function update(dt) {
   }
   wave -= dt;
   if (wave<=0) {
-    const x=36+Math.random()*288;
-    drones.push({x,base:x,y:-24,age:0,fire:.9+Math.random()*.8,sway:Math.random()*29});
+    const count = elapsed >= 40 ? 2 : 1;
+    const firstLane = 36 + Math.random() * 288 / count;
+    for (let i = 0; i < count; i++) {
+      const x = firstLane + i * 144;
+      drones.push({x,base:x,y:-24,age:0,fire:.9+Math.random()*.8,sway:Math.random()*29,hp:armorActive ? 2 : 1});
+    }
     wave += Math.max(.29,.79-elapsed*.008);
   }
   shots.forEach(s => s.y-=dt*580);
@@ -95,7 +104,14 @@ function update(dt) {
     }
     for (const s of shots) {
       if (!s.dead && near(s,d,16)) {
-        s.dead=d.dead=true; points+=100; burst(d.x,d.y,'#ffb260'); break;
+        s.dead = true;
+        d.hp--;
+        if (d.hp === 0) {
+          d.dead = true;
+          points += 100;
+          burst(d.x,d.y,'#ffb260');
+          break;
+        }
       }
     }
     if (!d.dead && near(d,ship,21)) {d.dead=true; hit();}
@@ -128,7 +144,7 @@ function draw(t) {
     ctx.fillRect(x,(y+t*(20+z*105))%600,1+z,2+z*8);
   }
   for (const d of drones) {
-    shape(d.x,d.y,'#f38188',[[-18,-10],[-8,-5],[0,-12],[8,-5],[18,-10],[13,7],[0,15],[-13,7]]);
+    shape(d.x,d.y,d.hp === 2 ? '#a497ff' : '#f38188',[[-18,-10],[-8,-5],[0,-12],[8,-5],[18,-10],[13,7],[0,15],[-13,7]]);
     shape(d.x,d.y,'#ffdd90',[[0,-7],[5,2],[0,8],[-5,2]]);
   }
   ctx.fillStyle='#80ffdd';
