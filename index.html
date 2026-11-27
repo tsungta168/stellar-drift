@@ -11,25 +11,94 @@ header{position:absolute;inset:0 0 auto;display:flex;justify-content:space-betwe
 #panel{position:absolute;inset:0;display:grid;place-content:center;text-align:center;padding:16px;background:#080f22d9}
 #panel[hidden]{display:none}.kicker{color:#72ffdc;font:700 12px monospace;letter-spacing:.22em}h1{font-size:clamp(28px,8vw,58px);margin:.2em 0}p{line-height:1.65;margin:0 0 1.5em;color:#c2d3ec}
 button{justify-self:center;border:0;border-radius:8px;background:#72ffdc;color:#071621;padding:12px 30px;font:800 17px system-ui;cursor:pointer;min-height:48px}
+#sound{position:absolute;z-index:1;right:8px;top:34px;min-height:44px;padding:0 8px;font-size:12px;background:#142943;color:#eaf7ff;border:1px solid #335577}
 </style>
 <main>
 <canvas width="360" height="600" aria-label="星流突圍遊戲區"></canvas>
+<button id="sound" type="button" aria-pressed="true">音樂：開</button>
 <header><span id="score"></span><span id="clock"></span><span id="life"></span></header>
-<section id="panel"><span class="kicker">STELLAR DRIFT</span><h1 id="title">星流突圍</h1><p id="hint">拖曳或用方向鍵移動，戰機會自動射擊。<br>擊落無人機得分，撐過 60 秒即過關。</p><button id="start">開始遊戲</button></section>
+<section id="panel"><span class="kicker">STELLAR DRIFT</span><h1 id="title">星流突圍</h1><p id="hint">拖曳或用方向鍵移動，戰機會自動射擊。<br>擊落無人機得分，撐過 60 秒即過關。<br>第 30 秒接住金色補給，火力加倍！</p><button id="start">開始遊戲</button></section>
 </main>
 <script>
 'use strict';
 const canvas = document.querySelector('canvas');
 const ctx = canvas.getContext('2d');
-const ui = Object.fromEntries(['score','clock','life','panel','title','hint','start'].map(id => [id, document.getElementById(id)]));
+const ui = Object.fromEntries(['score','clock','life','panel','title','hint','start','sound'].map(id => [id, document.getElementById(id)]));
 const keys = new Set();
 const stars = Array.from({length:85}, () => [Math.random()*360, Math.random()*600, Math.random()]);
 const clamp = (n, min, max) => Math.max(min, Math.min(n, max));
 const near = (a,b,r) => (a.x-b.x)**2 + (a.y-b.y)**2 < r*r;
 let ship, shots, drones, sparks, hazards, points, hp, elapsed, cooldown, wave, shield, pointer, goal, playing;
 
+let nextElite, supply, powered;
+let audio, musicBus, nextBeat, beatIndex;
+let musicEnabled = true;
+const beatSeconds = 60 / 156 / 4;
+const melody = [
+  76,0,76,79,81,0,79,76, 74,0,72,74,76,0,79,0,
+  81,0,81,83,84,0,83,79, 76,0,79,76,74,72,71,0,
+  76,0,76,79,83,0,81,79, 77,0,76,77,81,0,84,0,
+  83,0,86,83,81,0,79,76, 74,0,77,74,71,0,74,0
+];
+const bass = [40,40,45,45,48,48,47,47];
+
+function tone(time, note, type, level, length, dropTo) {
+  const oscillator = audio.createOscillator();
+  const envelope = audio.createGain();
+  oscillator.type = type;
+  oscillator.frequency.setValueAtTime(440 * 2 ** ((note - 69) / 12), time);
+  if (dropTo) oscillator.frequency.exponentialRampToValueAtTime(dropTo, time + length);
+  envelope.gain.setValueAtTime(.0001, time);
+  envelope.gain.exponentialRampToValueAtTime(level, time + .008);
+  envelope.gain.exponentialRampToValueAtTime(.0001, time + length);
+  oscillator.connect(envelope).connect(musicBus);
+  oscillator.start(time);
+  oscillator.stop(time + length);
+}
+function stopMusic() {
+  if (!musicBus) return;
+  musicBus.disconnect();
+  musicBus = null;
+}
+function startMusic() {
+  const Audio = window.AudioContext || window.webkitAudioContext;
+  if (!Audio || !musicEnabled) return;
+  audio ??= new Audio();
+  audio.resume().catch(() => {});
+  stopMusic();
+  musicBus = audio.createGain();
+  musicBus.gain.value = .44;
+  musicBus.connect(audio.destination);
+  nextBeat = audio.currentTime + .025;
+  beatIndex = 0;
+}
+function scheduleMusic() {
+  if (!musicBus || audio.state !== 'running') return;
+  if (nextBeat < audio.currentTime) nextBeat = audio.currentTime + .015;
+  while (nextBeat < audio.currentTime + .12) {
+    const lead = melody[beatIndex % melody.length];
+    const step = beatIndex % 16;
+    const root = bass[Math.floor(beatIndex / 8) % bass.length];
+    if (lead) tone(nextBeat, lead, 'square', .08, .13);
+    if (step % 2 === 0) tone(nextBeat, root + (step % 8 === 6 ? 12 : 0), 'sawtooth', .12, .13);
+    if (step % 8 === 0 || step === 10) tone(nextBeat, 43, 'sine', .38, .15, 42);
+    if (step % 8 === 4) tone(nextBeat, 65, 'triangle', .23, .09, 70);
+    if (step % 2 === 1) tone(nextBeat, 108, 'square', .055, .045, 850);
+    beatIndex++;
+    nextBeat += beatSeconds;
+  }
+}
+ui.sound.onclick = () => {
+  musicEnabled = !musicEnabled;
+  ui.sound.textContent = musicEnabled ? '音樂：開' : '音樂：關';
+  ui.sound.setAttribute('aria-pressed', String(musicEnabled));
+  if (musicEnabled && playing) startMusic();
+  else stopMusic();
+};
+
 function reset() {
   ship = {x:180,y:510};
+  nextElite = 10; supply = null; powered = false;
   shots = []; drones = []; hazards = []; sparks = [];
   points = elapsed = cooldown = shield = 0;
   hp = 3; wave = .35; pointer = goal = null;
@@ -38,10 +107,11 @@ function reset() {
 function hud() {
   ui.score.textContent = '分數 ' + points;
   ui.clock.textContent = Math.max(0, Math.ceil(60-elapsed)) + ' 秒';
-  ui.life.textContent = '戰機 ' + hp;
+  ui.life.textContent = '戰機 ' + hp + (powered ? ' · 火力 ×2' : '');
 }
 function end(won) {
   playing = false;
+  stopMusic();
   ui.title.textContent = won ? '成功突圍！' : '戰機墜毀';
   ui.hint.textContent = '本次分數：' + points;
   ui.start.textContent = '再玩一次';
@@ -59,13 +129,26 @@ function hit() {
   hp--; shield=1.25;
   burst(ship.x,ship.y,'#ff718b');
 }
+function spawnDrone(x, maxHp, y = -24, sway = Math.random() * 29) {
+  drones.push({x,base:x,y,age:0,fire:.9+Math.random()*.8,sway,hp:maxHp,maxHp});
+}
 function update(dt) {
-  const armorWasActive = elapsed >= 55;
+  const previousElapsed = elapsed;
   elapsed += dt;
-  const armorActive = elapsed >= 55;
-  if (armorActive && !armorWasActive) {
-    for (const drone of drones) drone.hp = 2;
+  const armorActive = elapsed >= 50;
+  if (armorActive && previousElapsed < 50) {
+    for (const drone of drones) {
+      if (drone.maxHp === 1) {
+        drone.maxHp = 2;
+        drone.hp = 2;
+      }
+    }
   }
+  if (elapsed >= nextElite && nextElite < 60) {
+    [91,180,269].forEach((x,i) => spawnDrone(x,2,i === 1 ? -16 : -35,10));
+    nextElite += 10;
+  }
+  if (previousElapsed < 30 && elapsed >= 30) supply = {x:180,y:24};
   shield -= dt;
   if (goal) {
     ship.x += (goal.x-ship.x)*Math.min(1,dt*20);
@@ -78,9 +161,20 @@ function update(dt) {
   }
   ship.x = clamp(ship.x,15,345);
   ship.y = clamp(ship.y,44,580);
+  if (supply) {
+    supply.y += dt * 105;
+    if (near(ship,supply,29)) {
+      powered = true;
+      burst(supply.x,supply.y,'#ffe27d');
+      supply = null;
+    } else if (supply.y > 625) {
+      supply = null;
+    }
+  }
   cooldown -= dt;
   if (cooldown<=0) {
-    shots.push({x:ship.x-6,y:ship.y-13},{x:ship.x+6,y:ship.y-13});
+    const damage = powered ? 2 : 1;
+    shots.push({x:ship.x-6,y:ship.y-13,damage},{x:ship.x+6,y:ship.y-13,damage});
     cooldown += .145;
   }
   wave -= dt;
@@ -89,7 +183,7 @@ function update(dt) {
     const firstLane = 36 + Math.random() * 288 / count;
     for (let i = 0; i < count; i++) {
       const x = firstLane + i * 144;
-      drones.push({x,base:x,y:-24,age:0,fire:.9+Math.random()*.8,sway:Math.random()*29,hp:armorActive ? 2 : 1});
+      spawnDrone(x, armorActive ? 2 : 1);
     }
     wave += Math.max(.29,.79-elapsed*.008);
   }
@@ -105,8 +199,8 @@ function update(dt) {
     for (const s of shots) {
       if (!s.dead && near(s,d,16)) {
         s.dead = true;
-        d.hp--;
-        if (d.hp === 0) {
+        d.hp -= s.damage;
+        if (d.hp <= 0) {
           d.dead = true;
           points += 100;
           burst(d.x,d.y,'#ffb260');
@@ -147,19 +241,28 @@ function draw(t) {
     shape(d.x,d.y,d.hp === 2 ? '#a497ff' : '#f38188',[[-18,-10],[-8,-5],[0,-12],[8,-5],[18,-10],[13,7],[0,15],[-13,7]]);
     shape(d.x,d.y,'#ffdd90',[[0,-7],[5,2],[0,8],[-5,2]]);
   }
-  ctx.fillStyle='#80ffdd';
-  shots.forEach(s=>ctx.fillRect(s.x-1.5,s.y,3,11));
+  for (const shot of shots) {
+    ctx.fillStyle = shot.damage === 2 ? '#ffe27d' : '#80ffdd';
+    ctx.fillRect(shot.x-1.5,shot.y,3,shot.damage === 2 ? 17 : 11);
+  }
+  if (supply) {
+    const {x,y} = supply;
+    shape(x,y,'#ffe27d',[[0,-16],[16,0],[0,16],[-16,0]]);
+    ctx.fillStyle='#302312';
+    ctx.fillRect(x-2,y-7,4,14);
+    ctx.fillRect(x-7,y-2,14,4);
+  }
   ctx.fillStyle='#ffc473';
   for (const h of hazards) {ctx.beginPath();ctx.arc(h.x,h.y,4,0,Math.PI*2);ctx.fill();}
   for (const p of sparks) {ctx.fillStyle=p.color;ctx.globalAlpha=p.ttl/.35;ctx.fillRect(p.x,p.y,3,3);}
   ctx.globalAlpha=shield>0 && Math.floor(t*15)%2 ? .35 : 1;
   const {x,y}=ship;
-  shape(x,y,'#5deeda',[[-5,10],[5,10],[0,20+Math.sin(t*43)*5]]);
-  shape(x,y,'#b4efff',[[0,-21],[7,-4],[18,11],[8,9],[0,14],[-8,9],[-18,11],[-7,-4]]);
-  shape(x,y,'#3475c4',[[0,-12],[5,4],[0,8],[-5,4]]);
+  shape(x,y,powered ? '#ff973f' : '#5deeda',[[-5,10],[5,10],[0,20+Math.sin(t*43)*5]]);
+  shape(x,y,powered ? '#ffe27d' : '#b4efff',[[0,-21],[7,-4],[18,11],[8,9],[0,14],[-8,9],[-18,11],[-7,-4]]);
+  shape(x,y,powered ? '#c0522e' : '#3475c4',[[0,-12],[5,4],[0,8],[-5,4]]);
   ctx.globalAlpha=1;
 }
-ui.start.onclick=()=>{reset(); playing=true;ui.panel.hidden=true;};
+ui.start.onclick=()=>{reset(); playing=true;ui.panel.hidden=true;startMusic();};
 function aim(e) {
   const r=canvas.getBoundingClientRect();
   goal={x:(e.clientX-r.left)*360/r.width,y:(e.clientY-r.top)*600/r.height-32};
@@ -182,7 +285,7 @@ let last;
 function frame(now) {
   const dt=Math.min(.04,(now-(last??now))/1000);
   last=now;
-  if (playing) update(dt);
+  if (playing) { update(dt); scheduleMusic(); }
   draw(now/1000);
   requestAnimationFrame(frame);
 }
