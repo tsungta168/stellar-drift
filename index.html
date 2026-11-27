@@ -30,7 +30,7 @@ const clamp = (n, min, max) => Math.max(min, Math.min(n, max));
 const near = (a,b,r) => (a.x-b.x)**2 + (a.y-b.y)**2 < r*r;
 let ship, shots, drones, sparks, hazards, points, hp, elapsed, cooldown, wave, shield, pointer, goal, playing;
 
-let nextElite, supply, powered;
+let nextElite, nextMeteor, supply, powered;
 let audio, musicBus, nextBeat, beatIndex;
 let musicEnabled = true;
 const beatSeconds = 60 / 156 / 4;
@@ -98,7 +98,7 @@ ui.sound.onclick = () => {
 
 function reset() {
   ship = {x:180,y:510};
-  nextElite = 10; supply = null; powered = false;
+  nextElite = 10; nextMeteor = 30; supply = null; powered = false;
   shots = []; drones = []; hazards = []; sparks = [];
   points = elapsed = cooldown = shield = 0;
   hp = 3; wave = .35; pointer = goal = null;
@@ -137,6 +137,10 @@ function update(dt) {
   elapsed += dt;
   const armorActive = elapsed >= 50;
   if (armorActive && previousElapsed < 50) {
+    for (const rock of drones.filter(d => d.meteor)) {
+      rock.maxHp = 6;
+      rock.hp *= 2;
+    }
     for (const drone of drones) {
       if (drone.maxHp === 1) {
         drone.maxHp = 2;
@@ -147,6 +151,14 @@ function update(dt) {
   if (elapsed >= nextElite && nextElite < 60) {
     [91,180,269].forEach((x,i) => spawnDrone(x,2,i === 1 ? -16 : -35,10));
     nextElite += 10;
+  }
+  if (elapsed >= nextMeteor && nextMeteor < 60) {
+    const lane = 45 + Math.random() * 120;
+    const rockHp = armorActive ? 6 : 3;
+    for (const x of [lane, lane + 150]) {
+      drones.push({meteor:true,x,y:-27,age:0,hp:rockHp,maxHp:rockHp});
+    }
+    nextMeteor += 3;
   }
   if (previousElapsed < 30 && elapsed >= 30) supply = {x:180,y:24};
   shield -= dt;
@@ -189,15 +201,16 @@ function update(dt) {
   }
   shots.forEach(s => s.y-=dt*580);
   for (const d of drones) {
-    d.age+=dt; d.y+=dt*(85+elapsed*.7);
-    d.x=d.base+Math.sin(d.age*3)*d.sway;
-    if (d.age>=d.fire && d.y<ship.y-25) {
+    d.age += dt;
+    d.y += dt * (d.meteor ? 110 : 85 + elapsed * .7);
+    if (!d.meteor) d.x = d.base + Math.sin(d.age * 3) * d.sway;
+    if (!d.meteor && d.age>=d.fire && d.y<ship.y-25) {
       const angle=Math.atan2(ship.y-d.y,ship.x-d.x);
       hazards.push({x:d.x,y:d.y,vx:Math.cos(angle)*145,vy:Math.sin(angle)*145});
       d.fire+=2;
     }
     for (const s of shots) {
-      if (!s.dead && near(s,d,16)) {
+      if (!s.dead && near(s,d,d.meteor ? 22 : 16)) {
         s.dead = true;
         d.hp -= s.damage;
         if (d.hp <= 0) {
@@ -208,7 +221,7 @@ function update(dt) {
         }
       }
     }
-    if (!d.dead && near(d,ship,21)) {d.dead=true; hit();}
+    if (!d.dead && near(d,ship,d.meteor ? 30 : 21)) {d.dead=true; hit();}
   }
   for (const h of hazards) {
     h.x+=h.vx*dt; h.y+=h.vy*dt;
@@ -225,6 +238,10 @@ function update(dt) {
 
 const sky=ctx.createLinearGradient(0,0,210,600);
 sky.addColorStop(0,'#0a122c'); sky.addColorStop(.55,'#18274a'); sky.addColorStop(1,'#07101f');
+const atmosphere = ctx.createLinearGradient(0,0,0,600);
+atmosphere.addColorStop(0,'#1666b9');
+atmosphere.addColorStop(1,'#75c9f5');
+const clouds = [[65,60,.85],[275,235,1.3],[118,460,1.05]];
 function shape(x,y,color,vertices) {
   ctx.fillStyle=color;
   ctx.beginPath();
@@ -232,12 +249,38 @@ function shape(x,y,color,vertices) {
   ctx.closePath(); ctx.fill();
 }
 function draw(t) {
+  const space = clamp((elapsed - 20) / 2, 0, 1);
+  ctx.fillStyle = atmosphere;
+  ctx.fillRect(0,0,360,600);
+  ctx.globalAlpha = 1 - space;
+  for (const [x, offset, size] of clouds) {
+    const y = (offset + t * 52) % 700 - 50;
+    ctx.fillStyle = '#f1f9fff0';
+    ctx.beginPath();
+    ctx.ellipse(x,y+5,48*size,13*size,0,0,Math.PI*2);
+    ctx.ellipse(x-17*size,y-4,20*size,15*size,0,0,Math.PI*2);
+    ctx.ellipse(x+10*size,y-9,24*size,20*size,0,0,Math.PI*2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = space;
   ctx.fillStyle=sky;ctx.fillRect(0,0,360,600);
   for (const [x,y,z] of stars) {
     ctx.fillStyle='rgba(161,216,255,'+(.2+z*.65)+')';
     ctx.fillRect(x,(y+t*(20+z*105))%600,1+z,2+z*8);
   }
+  ctx.globalAlpha = 1;
   for (const d of drones) {
+    if (d.meteor) {
+      ctx.save();
+      ctx.translate(d.x,d.y);
+      ctx.rotate(d.age * .95);
+      shape(0,0,'#b66b46',[[-22,-5],[-15,-19],[1,-23],[18,-14],[23,2],[12,21],[-8,20],[-23,8]]);
+      shape(0,0,'#edaa71',[[-15,-14],[1,-21],[14,-13],[8,-4],[-7,-3]]);
+      shape(0,0,'#764738',[[9,-4],[22,2],[11,19],[-4,12]]);
+      shape(0,0,'#8b5038',[[-17,1],[-8,-5],[-2,1],[-6,8],[-15,7]]);
+      ctx.restore();
+      continue;
+    }
     shape(d.x,d.y,d.hp === 2 ? '#a497ff' : '#f38188',[[-18,-10],[-8,-5],[0,-12],[8,-5],[18,-10],[13,7],[0,15],[-13,7]]);
     shape(d.x,d.y,'#ffdd90',[[0,-7],[5,2],[0,8],[-5,2]]);
   }
