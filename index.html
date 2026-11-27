@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>星流突圍</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#060914;color:#eaf7ff;font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100dvh}
+main{position:relative;width:min(100vw, 480px, 60dvh);aspect-ratio:3/5;overflow:hidden;border:1px solid #254253;background:#090e20}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+header{position:absolute;inset:0 0 auto;display:flex;justify-content:space-between;padding:14px;background:linear-gradient(#080f20,transparent);font:700 14px/1.2 system-ui;pointer-events:none}
+#panel{position:absolute;inset:0;display:grid;place-content:center;text-align:center;padding:16px;background:#080f22d9}
+#panel[hidden]{display:none}.kicker{color:#72ffdc;font:700 12px monospace;letter-spacing:.22em}h1{font-size:clamp(28px,8vw,58px);margin:.2em 0}p{line-height:1.65;margin:0 0 1.5em;color:#c2d3ec}
+button{justify-self:center;border:0;border-radius:8px;background:#72ffdc;color:#071621;padding:12px 30px;font:800 17px system-ui;cursor:pointer;min-height:48px}
+</style>
+<main>
+<canvas width="360" height="600" aria-label="星流突圍遊戲區"></canvas>
+<header><span id="score"></span><span id="clock"></span><span id="life"></span></header>
+<section id="panel"><span class="kicker">STELLAR DRIFT</span><h1 id="title">星流突圍</h1><p id="hint">拖曳或用方向鍵移動，戰機會自動射擊。<br>擊落無人機得分，撐過 60 秒即過關。</p><button id="start">開始遊戲</button></section>
+</main>
+<script>
+'use strict';
+const canvas = document.querySelector('canvas');
+const ctx = canvas.getContext('2d');
+const ui = Object.fromEntries(['score','clock','life','panel','title','hint','start'].map(id => [id, document.getElementById(id)]));
+const keys = new Set();
+const stars = Array.from({length:85}, () => [Math.random()*360, Math.random()*600, Math.random()]);
+const clamp = (n, min, max) => Math.max(min, Math.min(n, max));
+const near = (a,b,r) => (a.x-b.x)**2 + (a.y-b.y)**2 < r*r;
+let ship, shots, drones, sparks, hazards, points, hp, elapsed, cooldown, wave, shield, pointer, goal, playing;
+
+function reset() {
+  ship = {x:180,y:510};
+  shots = []; drones = []; hazards = []; sparks = [];
+  points = elapsed = cooldown = shield = 0;
+  hp = 3; wave = .35; pointer = goal = null;
+  hud();
+}
+function hud() {
+  ui.score.textContent = '分數 ' + points;
+  ui.clock.textContent = Math.max(0, Math.ceil(60-elapsed)) + ' 秒';
+  ui.life.textContent = '戰機 ' + hp;
+}
+function end(won) {
+  playing = false;
+  ui.title.textContent = won ? '成功突圍！' : '戰機墜毀';
+  ui.hint.textContent = '本次分數：' + points;
+  ui.start.textContent = '再玩一次';
+  ui.panel.hidden = false;
+  ui.start.focus();
+}
+function burst(x,y,color) {
+  for (let i=0;i<12;i++) {
+    const angle = Math.random()*Math.PI*2;
+    sparks.push({x,y,vx:Math.cos(angle)*95,vy:Math.sin(angle)*95,ttl:.35,color});
+  }
+}
+function hit() {
+  if (shield>0) return;
+  hp--; shield=1.25;
+  burst(ship.x,ship.y,'#ff718b');
+}
+function update(dt) {
+  elapsed += dt;
+  shield -= dt;
+  if (goal) {
+    ship.x += (goal.x-ship.x)*Math.min(1,dt*20);
+    ship.y += (goal.y-ship.y)*Math.min(1,dt*20);
+  } else {
+    const dx = Number(keys.has('ArrowRight'))-Number(keys.has('ArrowLeft'));
+    const dy = Number(keys.has('ArrowDown'))-Number(keys.has('ArrowUp'));
+    const step = dt*260/(Math.hypot(dx,dy)||1);
+    ship.x += dx*step; ship.y += dy*step;
+  }
+  ship.x = clamp(ship.x,15,345);
+  ship.y = clamp(ship.y,44,580);
+  cooldown -= dt;
+  if (cooldown<=0) {
+    shots.push({x:ship.x-6,y:ship.y-13},{x:ship.x+6,y:ship.y-13});
+    cooldown += .145;
+  }
+  wave -= dt;
+  if (wave<=0) {
+    const x=36+Math.random()*288;
+    drones.push({x,base:x,y:-24,age:0,fire:.9+Math.random()*.8,sway:Math.random()*29});
+    wave += Math.max(.29,.79-elapsed*.008);
+  }
+  shots.forEach(s => s.y-=dt*580);
+  for (const d of drones) {
+    d.age+=dt; d.y+=dt*(85+elapsed*.7);
+    d.x=d.base+Math.sin(d.age*3)*d.sway;
+    if (d.age>=d.fire && d.y<ship.y-25) {
+      const angle=Math.atan2(ship.y-d.y,ship.x-d.x);
+      hazards.push({x:d.x,y:d.y,vx:Math.cos(angle)*145,vy:Math.sin(angle)*145});
+      d.fire+=2;
+    }
+    for (const s of shots) {
+      if (!s.dead && near(s,d,16)) {
+        s.dead=d.dead=true; points+=100; burst(d.x,d.y,'#ffb260'); break;
+      }
+    }
+    if (!d.dead && near(d,ship,21)) {d.dead=true; hit();}
+  }
+  for (const h of hazards) {
+    h.x+=h.vx*dt; h.y+=h.vy*dt;
+    if (near(h,ship,13)) {h.dead=true; hit();}
+  }
+  for (const p of sparks) {p.x+=p.vx*dt; p.y+=p.vy*dt; p.ttl-=dt;}
+  shots=shots.filter(s=>!s.dead && s.y> -15);
+  drones=drones.filter(d=>!d.dead && d.y<630);
+  hazards=hazards.filter(h=>!h.dead && h.y<620 && h.x> -15 && h.x<375);
+  sparks=sparks.filter(p=>p.ttl>0);
+  hud();
+  if (hp<=0 || elapsed>=60) end(hp>0);
+}
+
+const sky=ctx.createLinearGradient(0,0,210,600);
+sky.addColorStop(0,'#0a122c'); sky.addColorStop(.55,'#18274a'); sky.addColorStop(1,'#07101f');
+function shape(x,y,color,vertices) {
+  ctx.fillStyle=color;
+  ctx.beginPath();
+  vertices.forEach(([dx,dy],i)=>i?ctx.lineTo(x+dx,y+dy):ctx.moveTo(x+dx,y+dy));
+  ctx.closePath(); ctx.fill();
+}
+function draw(t) {
+  ctx.fillStyle=sky;ctx.fillRect(0,0,360,600);
+  for (const [x,y,z] of stars) {
+    ctx.fillStyle='rgba(161,216,255,'+(.2+z*.65)+')';
+    ctx.fillRect(x,(y+t*(20+z*105))%600,1+z,2+z*8);
+  }
+  for (const d of drones) {
+    shape(d.x,d.y,'#f38188',[[-18,-10],[-8,-5],[0,-12],[8,-5],[18,-10],[13,7],[0,15],[-13,7]]);
+    shape(d.x,d.y,'#ffdd90',[[0,-7],[5,2],[0,8],[-5,2]]);
+  }
+  ctx.fillStyle='#80ffdd';
+  shots.forEach(s=>ctx.fillRect(s.x-1.5,s.y,3,11));
+  ctx.fillStyle='#ffc473';
+  for (const h of hazards) {ctx.beginPath();ctx.arc(h.x,h.y,4,0,Math.PI*2);ctx.fill();}
+  for (const p of sparks) {ctx.fillStyle=p.color;ctx.globalAlpha=p.ttl/.35;ctx.fillRect(p.x,p.y,3,3);}
+  ctx.globalAlpha=shield>0 && Math.floor(t*15)%2 ? .35 : 1;
+  const {x,y}=ship;
+  shape(x,y,'#5deeda',[[-5,10],[5,10],[0,20+Math.sin(t*43)*5]]);
+  shape(x,y,'#b4efff',[[0,-21],[7,-4],[18,11],[8,9],[0,14],[-8,9],[-18,11],[-7,-4]]);
+  shape(x,y,'#3475c4',[[0,-12],[5,4],[0,8],[-5,4]]);
+  ctx.globalAlpha=1;
+}
+ui.start.onclick=()=>{reset(); playing=true;ui.panel.hidden=true;};
+function aim(e) {
+  const r=canvas.getBoundingClientRect();
+  goal={x:(e.clientX-r.left)*360/r.width,y:(e.clientY-r.top)*600/r.height-32};
+}
+canvas.onpointerdown=e=>{
+  if (!playing || pointer!==null) return;
+  pointer=e.pointerId;canvas.setPointerCapture(pointer);aim(e);
+};
+canvas.onpointermove=e=>{if (pointer===e.pointerId) aim(e);};
+canvas.onlostpointercapture=e=>{if(pointer===e.pointerId) pointer=goal=null;};
+window.addEventListener('keydown',e=>{
+  if (playing && ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) {
+    e.preventDefault();keys.add(e.key);
+  }
+});
+window.addEventListener('keyup',e=>keys.delete(e.key));
+window.addEventListener('blur',()=>keys.clear());
+reset();
+let last;
+function frame(now) {
+  const dt=Math.min(.04,(now-(last??now))/1000);
+  last=now;
+  if (playing) update(dt);
+  draw(now/1000);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</html>
