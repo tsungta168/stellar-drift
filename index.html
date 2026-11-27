@@ -179,7 +179,7 @@ function update(dt) {
   }
   wave -= dt;
   if (wave<=0) {
-    const count = elapsed >= 40 ? 2 : 1;
+    const count = elapsed >= 20 ? 2 : 1;
     const firstLane = 36 + Math.random() * 288 / count;
     for (let i = 0; i < count; i++) {
       const x = firstLane + i * 144;
